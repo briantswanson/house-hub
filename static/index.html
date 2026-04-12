@@ -1,22 +1,183 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>House Hub</title>
   <link rel="manifest" href="/static/manifest.json" />
   <meta name="theme-color" content="#1a1a2e" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
+  <style>
+    body { padding-bottom: 2rem; }
+    header { padding: 1rem 0; border-bottom: 1px solid var(--pico-muted-border-color); margin-bottom: 1.5rem; }
+    header h1 { margin: 0; font-size: 1.5rem; }
+    header small { color: var(--pico-muted-color); }
+    .platform-card { margin-bottom: 1.5rem; }
+    .platform-card header { border-bottom: 1px solid var(--pico-muted-border-color); padding: 0.5rem 0; margin-bottom: 0.75rem; display: flex; justify-content: space-between; align-items: center; }
+    .platform-card header h2 { margin: 0; font-size: 1rem; }
+    .badge { font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 999px; }
+    .badge-connected { background: #1a3a1a; color: #4caf50; }
+    .badge-unconfigured { background: #2a2a2a; color: var(--pico-muted-color); }
+    .device-row { display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--pico-muted-border-color); gap: 1rem; }
+    .device-row:last-child { border-bottom: none; }
+    .device-name { font-size: 0.9rem; flex: 1; }
+    .device-state { font-size: 0.85rem; color: var(--pico-muted-color); flex: 1; text-align: center; }
+    .device-action { flex: 1; text-align: right; }
+    .device-action button { font-size: 0.8rem; padding: 0.3rem 0.75rem; margin: 0; }
+    .stat-row { display: flex; align-items: center; justify-content: space-between; padding: 0.4rem 0; }
+    .stat-label { font-size: 0.9rem; color: var(--pico-muted-color); }
+    .stat-value { font-size: 0.9rem; font-weight: bold; }
+    .unconfigured-msg { color: var(--pico-muted-color); font-size: 0.85rem; font-style: italic; padding: 0.5rem 0; }
+    .unconfigured-msg code { font-size: 0.8rem; }
+    #last-updated { font-size: 0.75rem; color: var(--pico-muted-color); text-align: right; margin-top: -1rem; margin-bottom: 1rem; }
+  </style>
 </head>
 <body>
-  <h1>House Hub</h1>
-  <p>Dashboard coming soon.</p>
+  <main class="container">
+    <header>
+      <h1>House Hub</h1>
+      <small>Smart home dashboard</small>
+    </header>
+
+    <div id="last-updated"></div>
+    <div id="dashboard">
+      <p aria-busy="true">Loading...</p>
+    </div>
+  </main>
+
   <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/static/sw.js');
+    const POLL_INTERVAL = 30000;
+
+    const PLATFORM_META = {
+      smartthings: { label: "SmartThings",  envHint: "SMARTTHINGS_TOKEN" },
+      pihole:       { label: "Pi-hole",      envHint: "PIHOLE_PASSWORD" },
+      hue:          { label: "Philips Hue",  envHint: "HUE_BRIDGE_IP + HUE_API_KEY" },
+      sensibo:      { label: "Sensibo",      envHint: "SENSIBO_API_KEY" },
+      schlage:      { label: "Schlage",      envHint: "account access required" },
+      myq:          { label: "myQ Garage",   envHint: "MYQ_EMAIL + MYQ_PASSWORD" },
+    };
+
+    const ACTION_LABELS = {
+      turn_on:  "Turn On",
+      turn_off: "Turn Off",
+    };
+
+    function badge(configured) {
+      return configured
+        ? `<span class="badge badge-connected">✓ connected</span>`
+        : `<span class="badge badge-unconfigured">not configured</span>`;
     }
-    fetch('/health')
-      .then(r => r.json())
-      .then(d => console.log('Backend:', d.status));
+
+    function renderSmartThings(data) {
+      if (!data.devices || data.devices.length === 0) {
+        return `<p class="unconfigured-msg">No devices found.</p>`;
+      }
+      return data.devices.map(device => {
+        const actions = (device.actions || []).map(action => `
+          <button class="outline" onclick="sendAction('${device.id}', '${action}')">${ACTION_LABELS[action] || action}</button>
+        `).join("");
+        return `
+          <div class="device-row">
+            <span class="device-name">${device.name}</span>
+            <span class="device-state">${device.state}</span>
+            <span class="device-action">${actions || "—"}</span>
+          </div>`;
+      }).join("");
+    }
+
+    function renderPihole(data) {
+      const blockingLabel = data.blocking_enabled ? "Disable" : "Enable";
+      const blockingAction = data.blocking_enabled ? "disable" : "enable";
+      return `
+        <div class="stat-row">
+          <span class="stat-label">Queries today</span>
+          <span class="stat-value">${data.queries_today?.toLocaleString() ?? "—"}</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Blocked</span>
+          <span class="stat-value">${data.blocked_percent ?? "—"}%</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Blocking</span>
+          <span class="stat-value">
+            ${data.blocking_enabled ? "enabled" : "disabled"}
+            <button class="outline" style="margin-left:0.75rem;font-size:0.8rem;padding:0.3rem 0.75rem;"
+              onclick="togglePihole('${blockingAction}')">${blockingLabel}</button>
+          </span>
+        </div>`;
+    }
+
+    function renderPlatform(key, data) {
+      const meta = PLATFORM_META[key] || { label: key, envHint: key };
+      const body = (() => {
+        if (!data.configured) {
+          return `<p class="unconfigured-msg">Not configured — add <code>${meta.envHint}</code> to .env and restart.</p>`;
+        }
+        if (key === "smartthings") return renderSmartThings(data);
+        if (key === "pihole") return renderPihole(data);
+        return `<p class="unconfigured-msg">Connected.</p>`;
+      })();
+
+      return `
+        <article class="platform-card">
+          <header>
+            <h2>${meta.label}</h2>
+            ${badge(data.configured)}
+          </header>
+          ${body}
+        </article>`;
+    }
+
+    function renderDashboard(status) {
+      const order = ["smartthings", "pihole", "hue", "sensibo", "schlage", "myq"];
+      const html = order
+        .filter(k => status[k] !== undefined)
+        .map(k => renderPlatform(k, status[k]))
+        .join("");
+      document.getElementById("dashboard").innerHTML = html;
+      document.getElementById("last-updated").textContent =
+        `Last updated: ${new Date().toLocaleTimeString()}`;
+    }
+
+    async function fetchStatus() {
+      try {
+        const resp = await fetch("/api/status/");
+        if (!resp.ok) throw new Error("API error");
+        const data = await resp.json();
+        renderDashboard(data);
+      } catch (e) {
+        document.getElementById("dashboard").innerHTML =
+          `<p>Could not reach House Hub backend.</p>`;
+      }
+    }
+
+    async function sendAction(deviceId, action) {
+      const command = action === "turn_on" ? "on" : "off";
+      await fetch(`/api/lights/${deviceId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command }),
+      });
+      await fetchStatus();
+    }
+
+    async function togglePihole(action) {
+      await fetch("/api/network/block", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      await fetchStatus();
+    }
+
+    // Initial load + polling
+    fetchStatus();
+    setInterval(fetchStatus, POLL_INTERVAL);
+
+    // PWA service worker
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/static/sw.js");
+    }
   </script>
 </body>
 </html>
