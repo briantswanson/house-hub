@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from app.api.lights import lights_bp
 from app.api.locks import locks_bp
 from app.api.hvac import hvac_bp
@@ -18,6 +18,10 @@ def create_app():
     app.register_blueprint(scenes_bp)
     app.register_blueprint(network_bp)
     app.register_blueprint(status_bp)
+
+    @app.route("/")
+    def index():
+        return send_from_directory(app.static_folder, "index.html")
 
     @app.route("/health")
     def health():
