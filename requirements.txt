@@ -1,4 +1,7 @@
 flask
 fastmcp
 requests
+apscheduler
+twilio
+python-dotenv
 pytest
