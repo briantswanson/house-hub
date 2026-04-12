@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>House Hub</title>
+</head>
+<body>
+  <h1>House Hub</h1>
+  <p>Dashboard coming soon.</p>
+  <script>
+    fetch('/health')
+      .then(r => r.json())
+      .then(d => console.log('Backend status:', d.status));
+  </script>
+</body>
+</html>
