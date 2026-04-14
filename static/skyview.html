@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skyview</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #000;
+      color: #00ff88;
+      font-family: 'Courier New', monospace;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #header {
+      padding: 8px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #00ff8833;
+      font-size: 13px;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    #header .title { font-size: 15px; letter-spacing: 2px; }
+    #header .stats { opacity: 0.6; }
+
+    /* OFFLINE STATE */
+    #offline {
+      flex: 1;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      background: #000;
+    }
+
+    #offline .label {
+      font-size: 22px;
+      letter-spacing: 4px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    #offline .sub { font-size: 12px; opacity: 0.4; letter-spacing: 2px; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* SKY */
+    #sky-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #sky {
+      position: relative;
+      flex: 1;
+      background: linear-gradient(to bottom, #00001a 0%, #000d2a 60%, #001208 100%);
+      overflow: hidden;
+    }
+
+    #compass {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      border-top: 1px solid #00ff8844;
+      font-size: 10px;
+      color: #00ff8855;
+    }
+
+    .compass-label {
+      position: absolute;
+      transform: translateX(-50%);
+    }
+
+    .aircraft {
+      position: absolute;
+      white-space: nowrap;
+      font-size: 13px;
+      line-height: 1.2;
+      text-shadow: 0 0 8px currentColor;
+      pointer-events: none;
+      will-change: transform;
+    }
+
+    .aircraft .plane { color: #fff; }
+    .aircraft .callsign { color: #00ff88; font-weight: bold; }
+    .aircraft .meta { color: #00ff8855; font-size: 10px; }
+
+    .aircraft.descending .callsign { color: #ffaa00; }
+    .aircraft.climbing .callsign { color: #44aaff; }
+
+    #ground {
+      flex-shrink: 0;
+      height: 34px;
+      background: #001400;
+      border-top: 2px solid #00ff88;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      font-size: 11px;
+      color: #00ff8855;
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <span class="title">SKYVIEW</span>
+  <span class="stats" id="stats">connecting...</span>
+</div>
+
+<div id="offline">
+  <div class="label">ANTENNA OFFLINE</div>
+  <div class="sub">waiting for readsb signal</div>
+</div>
+
+<div id="sky-wrap">
+  <div id="sky">
+    <canvas id="stars" style="position:absolute;inset:0;pointer-events:none"></canvas>
+    <div id="compass"></div>
+  </div>
+  <div id="ground">
+    Federal Way, WA &nbsp;|&nbsp; 47.3941° N, 122.3168° W &nbsp;|&nbsp; ADS-B 1090 MHz
+  </div>
+</div>
+
+<script>
+  // --- Stars ---
+  (function () {
+    const canvas = document.getElementById('stars');
+    const sky = document.getElementById('sky');
+    function draw() {
+      canvas.width = sky.clientWidth;
+      canvas.height = sky.clientHeight;
+      const ctx = canvas.getContext('2d');
+      for (let i = 0; i < 140; i++) {
+        const x = Math.random() * canvas.width;
+        const y = Math.random() * canvas.height * 0.88;
+        const r = Math.random() * 0.9 + 0.2;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.35 + 0.1})`;
+        ctx.fill();
+      }
+    }
+    draw();
+    window.addEventListener('resize', draw);
+  })();
+
+  // --- Compass ---
+  (function () {
+    const compass = document.getElementById('compass');
+    [
+      [0, 'N'], [45, 'NE'], [90, 'E'], [135, 'SE'],
+      [180, 'S'], [225, 'SW'], [270, 'W'], [315, 'NW']
+    ].forEach(([deg, label]) => {
+      const el = document.createElement('span');
+      el.className = 'compass-label';
+      el.textContent = label;
+      el.style.left = `${(deg / 360) * 100}%`;
+      compass.appendChild(el);
+    });
+  })();
+
+  // --- State ---
+  const MAX_ALT = 45000;
+  const SKY_TOP_PAD = 0.04;   // fraction from top
+  const SKY_BOT_PAD = 0.14;   // fraction from bottom (compass area)
+
+  // px/s for a plane heading directly east or west — controls how fast they cross
+  const SPEED_PX_S = 40;
+
+  const planeState = {};  // hex -> { x, vx, y, data, el }
+  let lastTs = null;
+  let online = true;
+
+  // --- Y from altitude ---
+  function yPct(alt) {
+    const a = Math.max(0, Math.min(alt || 2000, MAX_ALT));
+    const frac = a / MAX_ALT;
+    return (SKY_TOP_PAD + (1 - frac) * (1 - SKY_TOP_PAD - SKY_BOT_PAD)) * 100;
+  }
+
+  // --- Render a single plane element ---
+  function renderEl(state) {
+    const { x, data, el } = state;
+    if (!el) return;
+    const sky = document.getElementById('sky');
+    const skyW = sky.clientWidth;
+    const skyH = sky.clientHeight;
+
+    el.style.left = x + 'px';
+    el.style.top = (yPct(data.alt_baro) / 100 * skyH) + 'px';
+
+    const goingRight = state.vx >= 0;
+    const callsign = data.flight || data.hex;
+    const alt = data.alt_baro ? `FL${Math.round(data.alt_baro / 100)}` : '';
+    const dist = data.r_dst != null ? `${data.r_dst.toFixed(1)}nm` : '';
+
+    let cls = 'aircraft';
+    if (data.baro_rate > 200) cls += ' climbing';
+    else if (data.baro_rate < -200) cls += ' descending';
+    el.className = cls;
+
+    if (goingRight) {
+      el.innerHTML =
+        `<span class="plane">&#x2708;</span> ` +
+        `<span class="callsign">${callsign}</span> ` +
+        `<span class="meta">${alt}</span>`;
+    } else {
+      el.innerHTML =
+        `<span class="meta">${alt}</span> ` +
+        `<span class="callsign">${callsign}</span> ` +
+        `<span class="plane" style="display:inline-block;transform:scaleX(-1)">&#x2708;</span>`;
+    }
+  }
+
+  // --- Animation loop ---
+  function animate(ts) {
+    if (lastTs !== null) {
+      const dt = Math.min((ts - lastTs) / 1000, 0.1); // seconds, capped
+      const sky = document.getElementById('sky');
+      const skyW = sky.clientWidth;
+
+      Object.entries(planeState).forEach(([hex, state]) => {
+        state.x += state.vx * dt;
+        // Remove if flown off screen (with margin)
+        if (state.x < -300 || state.x > skyW + 300) {
+          if (state.el) state.el.remove();
+          delete planeState[hex];
+          return;
+        }
+        renderEl(state);
+      });
+    }
+    lastTs = ts;
+    requestAnimationFrame(animate);
+  }
+
+  requestAnimationFrame(animate);
+
+  // --- Update from API ---
+  function updatePlanes(aircraft) {
+    const sky = document.getElementById('sky');
+    const skyW = sky.clientWidth;
+    const incoming = new Set(aircraft.map(ac => ac.hex));
+
+    // Remove planes no longer tracked
+    Object.keys(planeState).forEach(hex => {
+      if (!incoming.has(hex)) {
+        if (planeState[hex].el) planeState[hex].el.remove();
+        delete planeState[hex];
+      }
+    });
+
+    aircraft.forEach(ac => {
+      const track = ac.track || 0;
+      const trackRad = track * Math.PI / 180;
+      // vx: sin(track) gives east component — positive = rightward
+      const vx = Math.sin(trackRad) * SPEED_PX_S;
+
+      if (!planeState[ac.hex]) {
+        // New plane — start at its bearing-mapped X position
+        const x = (ac.r_dir / 360) * skyW;
+        const el = document.createElement('div');
+        el.dataset.hex = ac.hex;
+        sky.appendChild(el);
+        planeState[ac.hex] = { x, vx, data: ac, el };
+        renderEl(planeState[ac.hex]);
+      } else {
+        // Update velocity and data; preserve current animated x
+        planeState[ac.hex].vx = vx;
+        planeState[ac.hex].data = ac;
+      }
+    });
+  }
+
+  // --- Online/offline toggle ---
+  function setOnline(isOnline) {
+    if (online === isOnline) return;
+    online = isOnline;
+    document.getElementById('offline').style.display = isOnline ? 'none' : 'flex';
+    document.getElementById('sky-wrap').style.display = isOnline ? 'flex' : 'none';
+  }
+
+  setOnline(false); // start offline until first successful poll
+
+  // --- Poll ---
+  async function poll() {
+    try {
+      const resp = await fetch('/api/adsb/aircraft');
+      const data = await resp.json();
+
+      if (data.error && data.count === 0) {
+        setOnline(false);
+        document.getElementById('stats').textContent = 'antenna offline';
+        return;
+      }
+
+      setOnline(true);
+      updatePlanes(data.aircraft || []);
+      const ts = new Date().toLocaleTimeString();
+      document.getElementById('stats').textContent =
+        `${data.count} aircraft tracked  |  ${ts}`;
+    } catch {
+      setOnline(false);
+      document.getElementById('stats').textContent = 'antenna offline';
+    }
+  }
+
+  poll();
+  setInterval(poll, 4000);
+</script>
+</body>
+</html>

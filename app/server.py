@@ -6,6 +6,7 @@ from app.api.appliances import appliances_bp
 from app.api.scenes import scenes_bp
 from app.api.network import network_bp
 from app.api.status import status_bp
+from app.api.adsb import adsb_bp
 
 
 def create_app():
@@ -18,10 +19,15 @@ def create_app():
     app.register_blueprint(scenes_bp)
     app.register_blueprint(network_bp)
     app.register_blueprint(status_bp)
+    app.register_blueprint(adsb_bp)
 
     @app.route("/")
     def index():
         return send_from_directory(app.static_folder, "index.html")
+
+    @app.route("/skyview")
+    def skyview():
+        return send_from_directory(app.static_folder, "skyview.html")
 
     @app.route("/health")
     def health():
