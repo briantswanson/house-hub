@@ -99,6 +99,7 @@
 
     .aircraft .plane { color: #fff; }
     .aircraft .callsign { color: #00ff88; font-weight: bold; }
+    .aircraft .airline { color: #00cc66; font-size: 11px; }
     .aircraft .meta { color: #00ff8855; font-size: 10px; }
 
     .aircraft.descending .callsign { color: #ffaa00; }
@@ -178,6 +179,24 @@
     });
   })();
 
+  // --- Airline lookup ---
+  const AIRLINES = {
+    AAL: 'American', ACA: 'Air Canada', AFR: 'Air France', ANA: 'All Nippon',
+    ASA: 'Alaska', BAW: 'British Airways', CLX: 'Cargolux', CPZ: 'Compass',
+    DAL: 'Delta', DLH: 'Lufthansa', ENY: 'Envoy', FDX: 'FedEx',
+    FFT: 'Frontier', GTI: 'Atlas Air', HAL: 'Hawaiian', JAL: 'Japan Airlines',
+    JBU: 'JetBlue', JZA: 'Jazz/AC Express', KAL: 'Korean Air', KLM: 'KLM',
+    NKS: 'Spirit', PDT: 'Piedmont', QXE: 'Horizon', RPA: 'Republic',
+    SKW: 'SkyWest', SWA: 'Southwest', UAL: 'United', UPS: 'UPS',
+    VRD: 'Virgin', WJA: 'WestJet', WWI: 'World Airways',
+  };
+
+  function airlineName(flight) {
+    if (!flight) return '';
+    const code = flight.slice(0, 3).toUpperCase();
+    return AIRLINES[code] || '';
+  }
+
   // --- State ---
   const MAX_ALT = 45000;
   const SKY_TOP_PAD = 0.04;   // fraction from top
@@ -210,6 +229,7 @@
 
     const goingRight = state.vx >= 0;
     const callsign = data.flight || data.hex;
+    const airline = airlineName(data.flight);
     const alt = data.alt_baro ? `FL${Math.round(data.alt_baro / 100)}` : '';
     const dist = data.r_dst != null ? `${data.r_dst.toFixed(1)}nm` : '';
 
@@ -218,15 +238,19 @@
     else if (data.baro_rate < -200) cls += ' descending';
     el.className = cls;
 
+    const airlineSpan = airline ? `<span class="airline">${airline}</span> ` : '';
+
     if (goingRight) {
       el.innerHTML =
         `<span class="plane">&#x2708;</span> ` +
+        airlineSpan +
         `<span class="callsign">${callsign}</span> ` +
         `<span class="meta">${alt}</span>`;
     } else {
       el.innerHTML =
         `<span class="meta">${alt}</span> ` +
         `<span class="callsign">${callsign}</span> ` +
+        (airline ? `<span class="airline">${airline}</span> ` : '') +
         `<span class="plane" style="display:inline-block;transform:scaleX(-1)">&#x2708;</span>`;
     }
   }
